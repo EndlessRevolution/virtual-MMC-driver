@@ -50,5 +50,28 @@ static void exit() {
     printk(KERN_INFO "Unload module\n");
 }
 
+static int open(struct inode *inode, struct file *filp) {
+
+    filp->private_data = kzalloc(2048);
+    if (!filp->private_data) {
+        printk(KERN_ERR "Memory allocation for vmmc failed\n");
+        return -ENOMEM;
+    }
+    printk(KERN_INFO "Vmmc device opened\n");
+    return 0;
+}
+
+static int release(struct inode *inode, struct file *filp) {
+
+    if (filp->private_data) {
+        kfree(filp->private_data);
+        filp->private_data = NULL;
+    }
+    printk(KERN_INFO "Vmmc device closed\n");
+    return 0;
+}
+
+MODULE_LICENSE("GPL");
+
 module_init(init);
 module_exit(exit);
