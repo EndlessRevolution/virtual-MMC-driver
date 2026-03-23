@@ -11,7 +11,6 @@
 #define ONE_BLOCK_SIZE 512
 #define VMMC_MEMORY (ONE_BLOCK_SIZE * MAX_BLOCKS)
 
-static int ret = 0;
 static dev_t dev_num;
 static int major;
 static int minor = 0;
@@ -20,13 +19,16 @@ static struct mutex ioctl_lock;
 
 static int open(struct inode *inode, struct file *filp) {
 
+    int ret = 0;
     filp->private_data = kzalloc(VMMC_MEMORY, GFP_KERNEL);
-    if (!filp->private_data) {
-        printk(KERN_ERR "vmmc: memory allocation for mmc card failed\n");
-        return -ENOMEM;
-    }
+    if (!filp->private_data) goto err_mem;
     printk(KERN_INFO "vmmc: device opened\n");
-    return 0;
+    goto out;
+err_mem:
+    printk(KERN_ERR "vmmc: memory allocation for mmc card failed\n");
+    ret = -ENOMEM;
+out:
+    return ret;
 }
 
 static int release(struct inode *inode, struct file *filp) {
@@ -42,6 +44,7 @@ static int release(struct inode *inode, struct file *filp) {
 static long vmmc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg) {
 
     mutex_lock(&ioctl_lock);
+    int ret = 0;
     char *vmmc_buffer = filp->private_data;
     char *tmp = kmalloc(ONE_BLOCK_SIZE, GFP_KERNEL);
     if (!tmp) goto err_mem_alloc;
@@ -140,11 +143,9 @@ static const struct file_operations vmmc_fops = {
 
 static int vmmc_init(void) {
 
+    int ret = 0;
     ret = alloc_chrdev_region(&dev_num, 0, 1, DEVICE_NAME);
-    if (ret < 0) {
-        printk(KERN_ALERT "vmmc: failed to allocate device number\n");
-        return ret;
-    }
+    if (ret < 0) goto err_num;
     major = MAJOR(dev_num);
     minor = MINOR(dev_num);
 
@@ -152,22 +153,30 @@ static int vmmc_init(void) {
         DEVICE_NAME, major, minor);
 
     vmmc_cdev = cdev_alloc();
-    if (!vmmc_cdev) {
-        printk(KERN_ALERT "vmmc: failed to allocate cdev\n");
-        unregister_chrdev_region(dev_num, 1);
-        return -ENOMEM;
-    }
+    if (!vmmc_cdev) goto err_cdev;
     vmmc_cdev->ops = &vmmc_fops;
     vmmc_cdev->owner = THIS_MODULE;
 
     ret = cdev_add(vmmc_cdev, dev_num, 1);
-    if(ret){
-        printk(KERN_ALERT "vmmc: failed to add cdev to the kernel\n");
-        return ret;
-    }
+    if(ret) goto err_add;
     mutex_init(&ioctl_lock);
 
-    return 0;
+    goto out;
+
+err_num:
+    printk(KERN_ALERT "vmmc: failed to allocate device number, rc=%d\n", ret);
+    goto out;
+err_cdev:
+    printk(KERN_ALERT "vmmc: failed to allocate cdev\n");
+    unregister_chrdev_region(dev_num, 1);
+    ret = -ENOMEM;
+    goto out;
+err_add:
+    printk(KERN_ALERT "vmmc: failed to add cdev to the kernel, rc=%d\n", ret);
+    unregister_chrdev_region(dev_num, 1);
+    kfree(vmmc_cdev);
+out:
+    return ret;
 }
 
 static void vmmc_exit(void) {
