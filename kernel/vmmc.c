@@ -24,6 +24,7 @@ static int open(struct inode *inode, struct file *filp) {
     if (!filp->private_data) goto err_mem;
     printk(KERN_INFO "vmmc: device opened\n");
     goto out;
+
 err_mem:
     printk(KERN_ERR "vmmc: memory allocation for mmc card failed\n");
     ret = -ENOMEM;
