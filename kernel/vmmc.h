@@ -9,10 +9,10 @@ struct vmmc_cmd {
     void __user *data;
 };
 
-#define MMC_MAGIC '#'
-#define MMC_READ_SINGLE_BLOCK    _IOR(MMC_MAGIC, 1, struct vmmc_cmd)
-#define MMC_READ_MULTIPLE_BLOCK  _IOR(MMC_MAGIC, 2, struct vmmc_cmd)
-#define MMC_WRITE_SINGLE_BLOCK   _IOW(MMC_MAGIC, 3, struct vmmc_cmd)
-#define MMC_WRITE_MULTIPLE_BLOCK _IOW(MMC_MAGIC, 4, struct vmmc_cmd)
+#define VMMC_MAGIC '#'
+#define VMMC_READ_SINGLE_BLOCK    _IOR(VMMC_MAGIC, 1, struct vmmc_cmd)
+#define VMMC_READ_MULTIPLE_BLOCK  _IOR(VMMC_MAGIC, 2, struct vmmc_cmd)
+#define VMMC_WRITE_SINGLE_BLOCK   _IOW(VMMC_MAGIC, 3, struct vmmc_cmd)
+#define VMMC_WRITE_MULTIPLE_BLOCK _IOW(VMMC_MAGIC, 4, struct vmmc_cmd)
 
 #endif

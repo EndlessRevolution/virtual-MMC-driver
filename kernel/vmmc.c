@@ -36,39 +36,39 @@ static int release(struct inode *inode, struct file *filp) {
     return 0;
 }
 
-static inline int validate_single_operation(truct vmmc_cmd cmd_data) {
-    if (cmd_data.cur_block >= MAX_BLOCKS) {
+static inline int validate_single_operation(struct vmmc_cmd *cmd_data) {
+    if (cmd_data->cur_block >= MAX_BLOCKS) {
         printk(KERN_ERR "vmmc: MMC card memory overflow\n");
         return -EINVAL;
     }
-    if (cmd_data.block_num != 1) {
+    if (cmd_data->block_num != 1) {
         printk(KERN_ERR "vmmc: wrong number of blocks\n");
         return -EINVAL;
     }
     return 0;
 }
 
-static inline int validate_multiple_operation(truct vmmc_cmd cmd_data) {
-    if ((cmd_data.cur_block + cmd_data.block_num) >= MAX_BLOCKS) {
+static inline int validate_multiple_operation(struct vmmc_cmd *cmd_data) {
+    if ((cmd_data->cur_block + cmd_data->block_num) >= MAX_BLOCKS) {
         printk(KERN_ERR "vmmc: MMC card memory overflow\n");
-        ret = -EINVAL;
+        return -EINVAL;
     }
-    if (!cmd_data.block_num) {
+    if (!cmd_data->block_num) {
         printk(KERN_ERR "vmmc: wrong number of blocks\n");
-        ret = -EINVAL;
+        return -EINVAL;
     }
     return 0;
 }
 
-static int read_single_block(struct vmmc_cmd cmd_data, char *tmp, char *vmmc_buffer) {
+static int read_single_block(struct vmmc_cmd *cmd_data, char *tmp, char *vmmc_buffer) {
     int ret = 0;
-    ret = validate_single_operation(struct vmmc_cmd cmd_data);
+    ret = validate_single_operation(cmd_data);
     if (ret) {
         goto out;
     }
-    char *start_copy = vmmc_buffer + cmd_data.cur_block * ONE_BLOCK_SIZE;
+    char *start_copy = vmmc_buffer + cmd_data->cur_block * ONE_BLOCK_SIZE;
     memcpy(tmp, start_copy, ONE_BLOCK_SIZE);
-    ret = copy_to_user(cmd_data.data, tmp, ONE_BLOCK_SIZE);
+    ret = copy_to_user(cmd_data->data, tmp, ONE_BLOCK_SIZE);
     if (ret) {
         printk(KERN_ERR "vmmc: error copy data to user\n");
         ret = -EFAULT;
@@ -77,17 +77,17 @@ out:
     return ret;
 }
 
-static int read_multiple_block(struct vmmc_cmd cmd_data, char *tmp, char *vmmc_buffer) {
+static int read_multiple_block(struct vmmc_cmd *cmd_data, char *tmp, char *vmmc_buffer) {
     int ret = 0;
-    ret = validate_multiple_operation(struct vmmc_cmd cmd_data);
+    ret = validate_multiple_operation(cmd_data);
     if (ret) {
         goto out;
     }
-    for (int i = 0; i < cmd_data.block_num; i++) {
-        char *start_copy = vmmc_buffer + (cmd_data.cur_block + i) * ONE_BLOCK_SIZE;
+    for (int i = 0; i < cmd_data->block_num; i++) {
+        char *start_copy = vmmc_buffer + (cmd_data->cur_block + i) * ONE_BLOCK_SIZE;
         memcpy(tmp, start_copy, ONE_BLOCK_SIZE);
 
-        ret = copy_to_user(cmd_data.data + i * ONE_BLOCK_SIZE, tmp, ONE_BLOCK_SIZE);
+        ret = copy_to_user(cmd_data->data + i * ONE_BLOCK_SIZE, tmp, ONE_BLOCK_SIZE);
         if (ret) {
             printk(KERN_ERR "vmmc: error copy data to user\n");
             ret = -EFAULT;
@@ -97,14 +97,14 @@ out:
     return ret;
 }
 
-static int write_single_block(struct vmmc_cmd cmd_data, char *tmp, char *vmmc_buffer) {
+static int write_single_block(struct vmmc_cmd *cmd_data, char *tmp, char *vmmc_buffer) {
     int ret = 0;
-    ret = validate_single_operation(struct vmmc_cmd cmd_data);
+    ret = validate_single_operation(cmd_data);
     if (ret) {
         goto out;
     }
-    char *start_paste = vmmc_buffer + cmd_data.cur_block * ONE_BLOCK_SIZE;
-    ret = copy_from_user(tmp, cmd_data.data, ONE_BLOCK_SIZE);
+    char *start_paste = vmmc_buffer + cmd_data->cur_block * ONE_BLOCK_SIZE;
+    ret = copy_from_user(tmp, cmd_data->data, ONE_BLOCK_SIZE);
     if (ret) {
         printk(KERN_ERR "vmmc: error copy data from user\n");
         ret = -EFAULT;
@@ -115,15 +115,15 @@ out:
     return ret;
 }
 
-static int write_multiple_block(struct vmmc_cmd cmd_data, char *tmp, char *vmmc_buffer) {
+static int write_multiple_block(struct vmmc_cmd *cmd_data, char *tmp, char *vmmc_buffer) {
     int ret = 0;
-    ret = validate_multiple_operation(struct vmmc_cmd cmd_data);
+    ret = validate_multiple_operation(cmd_data);
     if (ret) {
         goto out;
     }
-    for (int i = 0; i < cmd_data.block_num; i++) {
-        char *start_paste = vmmc_buffer + (cmd_data.cur_block + i) * ONE_BLOCK_SIZE;
-        ret = copy_from_user(tmp, cmd_data.data + i * ONE_BLOCK_SIZE, ONE_BLOCK_SIZE);
+    for (int i = 0; i < cmd_data->block_num; i++) {
+        char *start_paste = vmmc_buffer + (cmd_data->cur_block + i) * ONE_BLOCK_SIZE;
+        ret = copy_from_user(tmp, cmd_data->data + i * ONE_BLOCK_SIZE, ONE_BLOCK_SIZE);
         if (ret) {
             printk(KERN_ERR "vmmc: error copy data from user\n");
             ret = -EFAULT;
@@ -131,7 +131,6 @@ static int write_multiple_block(struct vmmc_cmd cmd_data, char *tmp, char *vmmc_
         }
         memcpy(start_paste, tmp, ONE_BLOCK_SIZE);
     }
-    goto out;
 out:
     return ret;
 }
@@ -155,19 +154,19 @@ static long vmmc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg) {
     switch(cmd) {
 
     case VMMC_READ_SINGLE_BLOCK:
-        ret = read_single_block(cmd_data, tmp, vmmc_buffer);
+        ret = read_single_block(&cmd_data, tmp, vmmc_buffer);
         break;
 
     case VMMC_READ_MULTIPLE_BLOCK:
-        ret = read_multiple_block(cmd_data, tmp, vmmc_buffer);
+        ret = read_multiple_block(&cmd_data, tmp, vmmc_buffer);
         break;
 
     case VMMC_WRITE_SINGLE_BLOCK:
-        ret = write_single_block(cmd_data, tmp, vmmc_buffer);
+        ret = write_single_block(&cmd_data, tmp, vmmc_buffer);
         break;
 
     case VMMC_WRITE_MULTIPLE_BLOCK:
-        ret = write_multiple_block(cmd_data, tmp, vmmc_buffer);
+        ret = write_multiple_block(&cmd_data, tmp, vmmc_buffer);
         break;
 
     default:
