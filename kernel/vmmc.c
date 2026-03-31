@@ -60,79 +60,29 @@ static inline int validate_multiple_operation(struct vmmc_cmd *cmd_data) {
     return 0;
 }
 
-static int read_single_block(struct vmmc_cmd *cmd_data, char *tmp, char *vmmc_buffer) {
-    int ret = 0;
-    ret = validate_single_operation(cmd_data);
-    if (ret) {
-        goto out;
-    }
-    char *start_copy = vmmc_buffer + cmd_data->cur_block * ONE_BLOCK_SIZE;
-    memcpy(tmp, start_copy, ONE_BLOCK_SIZE);
-    ret = copy_to_user(cmd_data->data, tmp, ONE_BLOCK_SIZE);
-    if (ret) {
-        printk(KERN_ERR "vmmc: error copy data to user\n");
-        ret = -EFAULT;
-    }
-out:
-    return ret;
-}
-
-static int read_multiple_block(struct vmmc_cmd *cmd_data, char *tmp, char *vmmc_buffer) {
-    int ret = 0;
-    ret = validate_multiple_operation(cmd_data);
-    if (ret) {
-        goto out;
-    }
+static int read_blocks(struct vmmc_cmd *cmd_data, char *tmp, char *vmmc_buffer) {
     for (int i = 0; i < cmd_data->block_num; i++) {
         char *start_copy = vmmc_buffer + (cmd_data->cur_block + i) * ONE_BLOCK_SIZE;
         memcpy(tmp, start_copy, ONE_BLOCK_SIZE);
 
-        ret = copy_to_user(cmd_data->data + i * ONE_BLOCK_SIZE, tmp, ONE_BLOCK_SIZE);
-        if (ret) {
+        if (copy_to_user(cmd_data->data + i * ONE_BLOCK_SIZE, tmp, ONE_BLOCK_SIZE)) {
             printk(KERN_ERR "vmmc: error copy data to user\n");
-            ret = -EFAULT;
+            return -EFAULT;
         }
     }
-out:
-    return ret;
+    return 0;
 }
 
-static int write_single_block(struct vmmc_cmd *cmd_data, char *tmp, char *vmmc_buffer) {
-    int ret = 0;
-    ret = validate_single_operation(cmd_data);
-    if (ret) {
-        goto out;
-    }
-    char *start_paste = vmmc_buffer + cmd_data->cur_block * ONE_BLOCK_SIZE;
-    ret = copy_from_user(tmp, cmd_data->data, ONE_BLOCK_SIZE);
-    if (ret) {
-        printk(KERN_ERR "vmmc: error copy data from user\n");
-        ret = -EFAULT;
-        goto out;
-    }
-    memcpy(start_paste, tmp, ONE_BLOCK_SIZE);
-out:
-    return ret;
-}
-
-static int write_multiple_block(struct vmmc_cmd *cmd_data, char *tmp, char *vmmc_buffer) {
-    int ret = 0;
-    ret = validate_multiple_operation(cmd_data);
-    if (ret) {
-        goto out;
-    }
+static int write_blocks(struct vmmc_cmd *cmd_data, char *tmp, char *vmmc_buffer) {
     for (int i = 0; i < cmd_data->block_num; i++) {
         char *start_paste = vmmc_buffer + (cmd_data->cur_block + i) * ONE_BLOCK_SIZE;
-        ret = copy_from_user(tmp, cmd_data->data + i * ONE_BLOCK_SIZE, ONE_BLOCK_SIZE);
-        if (ret) {
+        if (copy_from_user(tmp, cmd_data->data + i * ONE_BLOCK_SIZE, ONE_BLOCK_SIZE)) {
             printk(KERN_ERR "vmmc: error copy data from user\n");
-            ret = -EFAULT;
-            goto out;
+            return -EFAULT;
         }
         memcpy(start_paste, tmp, ONE_BLOCK_SIZE);
     }
-out:
-    return ret;
+    return 0;
 }
 
 static long vmmc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg) {
@@ -143,38 +93,51 @@ static long vmmc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg) {
     char *tmp = kmalloc(ONE_BLOCK_SIZE, GFP_KERNEL);
     if (!tmp) {
         printk(KERN_ERR "vmmc: memory allocation failed\n");
-        return -ENOMEM;
+        ret = -ENOMEM;
+        goto unlock_out;
     }
     ret = copy_from_user(&cmd_data, (struct vmmc_cmd __user *)arg, sizeof(cmd_data));
     if (ret) {
         printk(KERN_ERR "vmmc: error copy data from user\n");
-        return -EFAULT;
+        ret = -EFAULT;
+        goto free_out;
     }
-
     switch(cmd) {
 
     case VMMC_READ_SINGLE_BLOCK:
-        ret = read_single_block(&cmd_data, tmp, vmmc_buffer);
+        ret = validate_single_operation(&cmd_data);
+        if (!ret) {
+            ret = read_blocks(&cmd_data, tmp, vmmc_buffer);
+        }
         break;
 
     case VMMC_READ_MULTIPLE_BLOCK:
-        ret = read_multiple_block(&cmd_data, tmp, vmmc_buffer);
+        ret = validate_multiple_operation(&cmd_data);
+        if (!ret) {
+            ret = read_blocks(&cmd_data, tmp, vmmc_buffer);
+        }
         break;
 
     case VMMC_WRITE_SINGLE_BLOCK:
-        ret = write_single_block(&cmd_data, tmp, vmmc_buffer);
+        ret = validate_single_operation(&cmd_data);
+        if (!ret) {
+            ret = write_blocks(&cmd_data, tmp, vmmc_buffer);
+        }
         break;
 
     case VMMC_WRITE_MULTIPLE_BLOCK:
-        ret = write_multiple_block(&cmd_data, tmp, vmmc_buffer);
+        ret = validate_multiple_operation(&cmd_data);
+        if (!ret) {
+            ret = write_blocks(&cmd_data, tmp, vmmc_buffer);
+        }
         break;
 
     default:
         ret = -ENOIOCTLCMD;
     }
-    goto out;
-out:
+free_out:
     kfree(tmp);
+unlock_out:
     mutex_unlock(&mutex);
     return ret;
 }
@@ -191,7 +154,7 @@ static int vmmc_init(void) {
     int ret = 0;
     ret = alloc_chrdev_region(&dev_num, 0, 1, DEVICE_NAME);
     if (ret < 0) {
-        printk(KERN_ALERT "vmmc: failed to allocate device number, rc=%d\n", ret);
+        printk(KERN_ALERT "vmmc: failed to allocate device number\n", ret);
         goto out;
     }
     major = MAJOR(dev_num);
@@ -208,7 +171,7 @@ static int vmmc_init(void) {
     vmmc_cdev->owner = THIS_MODULE;
     ret = cdev_add(vmmc_cdev, dev_num, 1);
     if(ret) {
-        printk(KERN_ALERT "vmmc: failed to add cdev to the kernel, rc=%d\n", ret);
+        printk(KERN_ALERT "vmmc: failed to add cdev to the kernel\n", ret);
         goto free_out;
     }
     goto out;
