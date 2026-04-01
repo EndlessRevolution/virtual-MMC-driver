@@ -6,11 +6,6 @@
 #include <linux/mutex.h>
 #include "vmmc.h"
 
-#define DEVICE_NAME "virtual_mmc_driver"
-#define MAX_BLOCKS 2048
-#define ONE_BLOCK_SIZE 512
-#define VMMC_MEMORY (ONE_BLOCK_SIZE * MAX_BLOCKS)
-
 static dev_t dev_num;
 static int major;
 static int minor = 0;
