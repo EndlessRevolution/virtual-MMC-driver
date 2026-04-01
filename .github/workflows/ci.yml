@@ -1,0 +1,58 @@
+name: Kernel module CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      KERNEL_VERSION: "6.6.10"
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            bc \
+            flex \
+            bison \
+            libssl-dev \
+            libelf-dev \
+            wget \
+            perl
+
+      - name: Cache kernel source
+        id: cache-kernel
+        uses: actions/cache@v4
+        with:
+          path: linux-${{ env.KERNEL_VERSION }}
+          key: kernel-${{ env.KERNEL_VERSION }}
+
+      - name: Download Linux kernel
+        if: steps.cache-kernel.outputs.cache-hit != 'true'
+        run: |
+          wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.tar.xz
+          tar -xf linux-${KERNEL_VERSION}.tar.xz
+
+      - name: Build kernel headers
+        run: |
+          cd linux-${KERNEL_VERSION}
+          make defconfig
+          make modules_prepare
+
+      - name: Build module
+        run: |
+          make -C linux-${KERNEL_VERSION} M=$PWD modules
+
+      - name: Run checkpatch
+        run: |
+          wget https://raw.githubusercontent.com/torvalds/linux/master/scripts/checkpatch.pl
+          chmod +x checkpatch.pl
+          ./checkpatch.pl --no-tree --strict --file *.c || true
