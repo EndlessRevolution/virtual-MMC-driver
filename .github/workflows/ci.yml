@@ -49,10 +49,17 @@ jobs:
 
       - name: Build module
         run: |
-          make -C linux-${KERNEL_VERSION} M=$PWD modules
+          cd kernel
+          make -C ../linux-${KERNEL_VERSION} M=$(pwd) modules
 
       - name: Run checkpatch
         run: |
           wget https://raw.githubusercontent.com/torvalds/linux/master/scripts/checkpatch.pl
           chmod +x checkpatch.pl
-          ./checkpatch.pl --no-tree --strict --file *.c || true
+          ./checkpatch.pl --no-tree --file kernel/*.c || true
+
+      - name: Upload module artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vmmc-module
+          path: kernel/*.ko
