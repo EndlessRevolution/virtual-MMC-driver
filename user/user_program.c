@@ -6,6 +6,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/ioctl.h>
 
 #define SEC_TO_NS 1000000000LL
 #define NS_TO_MS 1000000.0
@@ -24,7 +25,7 @@ int parse_int(const char *str, unsigned int *out) {
   if (*endptr != '\0')
     return -1;
 
-  if (val < 0 || val > VMMC_MEMORY)
+  if (val < 0 || val > MAX_BLOCKS)
     return -1;
 
   *out = (int)val;
@@ -98,7 +99,7 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  fd = open(DEVICE_NAME, O_RDWR);
+  fd = open("/dev/virtual_mmc_driver", O_RDWR);
   if (fd < 0) {
     fprintf(stderr, "Failed to open device\n");
     return 1;
@@ -161,18 +162,18 @@ int main(int argc, char *argv[]) {
     cmd.data = buffer;
   }
 
-  clock_gettime(CLOCK_MONOTONIC, &start);
+  clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 
-  if (strcmp(operation, "read_single") == 0) {
+  if (strncmp(operation, "read_single", 11) == 0) {
     ret = ioctl(fd, VMMC_READ_SINGLE_BLOCK, &cmd);
 
-  } else if (strcmp(operation, "read_multiple") == 0) {
+  } else if (strncmp(operation, "read_multiple", 8) == 0) {
     ret = ioctl(fd, VMMC_READ_MULTIPLE_BLOCK, &cmd);
 
-  } else if (strcmp(operation, "write_single") == 0) {
+  } else if (strncmp(operation, "write_single", 12) == 0) {
     ret = ioctl(fd, VMMC_WRITE_SINGLE_BLOCK, &cmd);
 
-  } else if (strcmp(operation, "write_multiple") == 0) {
+  } else if (strncmp(operation, "write_multiple", 14) == 0) {
     ret = ioctl(fd, VMMC_WRITE_MULTIPLE_BLOCK, &cmd);
 
   } else {
@@ -182,7 +183,7 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  clock_gettime(CLOCK_MONOTONIC, &end);
+  clock_gettime(CLOCK_MONOTONIC_RAW, &end);
 
   time_ns =
       (end.tv_sec - start.tv_sec) * SEC_TO_NS + (end.tv_nsec - start.tv_nsec);
@@ -191,13 +192,10 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "Operation failed, code: %d\n", ret);
   } else {
 
-    printf("Operation successful\n");
-    printf("Time: %.8f ms\n", (double)time_ns / NS_TO_MS);
-
     if (strstr(operation, "read")) {
 
       FILE *f = fopen(output_file, "wb");
-      if (!f) {
+      if (!f) { 
         fprintf(stderr, "ERROR: cannot open output file\n");
         free(buffer);
         close(fd);
@@ -208,6 +206,9 @@ int main(int argc, char *argv[]) {
 
       fclose(f);
     }
+
+    printf("Operation successful\n");
+    printf("Time: %.8f ms\n", (double)time_ns / NS_TO_MS);
   }
 
   free(buffer);
