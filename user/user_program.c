@@ -1,4 +1,3 @@
-#include "vmmc.h"
 #include <fcntl.h>
 #include <getopt.h>
 #include <stdio.h>
@@ -6,12 +5,27 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <limits.h>
+#include <linux/mmc/ioctl.h>
 #include <sys/ioctl.h>
 
 #define SEC_TO_NS 1000000000LL
-#define NS_TO_MS 1000000.0
+#define REPEATS 1000
+#define ONE_BLOCK_SIZE 512U
+#define MAX_BLOCKS 2048U
+#define MAX_BYTE_POS 1048064U
+#define DEVICE_PATH "/dev/virtual_mmc_driver"
 
-enum { OPT_OP = 1, OPT_BLOCK, OPT_COUNT, OPT_INPUT, OPT_OUTPUT };
+#define MMC_RSP_SPI_R1 (1 << 0)
+#define MMC_RSP_R1     (1 << 1)
+#define MMC_CMD_ADTC   (1 << 5)
+
+#define MMC_READ_SINGLE_BLOCK     17
+#define MMC_READ_MULTIPLE_BLOCK   18
+#define MMC_WRITE_BLOCK           24
+#define MMC_WRITE_MULTIPLE_BLOCK  25
+
+enum { OPT_OP = 1, OPT_BYTE, OPT_COUNT, OPT_INPUT, OPT_OUTPUT };
 
 int parse_int(const char *str, unsigned int *out) {
   char *endptr;
@@ -19,35 +33,36 @@ int parse_int(const char *str, unsigned int *out) {
 
   if (!str || *str == '\0')
     return -1;
-
   val = strtol(str, &endptr, 10);
-
   if (*endptr != '\0')
     return -1;
-
-  if (val < 0 || val > MAX_BLOCKS)
+  if (val < 0)
     return -1;
-
-  *out = (int)val;
+  *out = (unsigned int)val;
   return 0;
 }
 
 int main(int argc, char *argv[]) {
-  struct vmmc_cmd cmd;
+  unsigned long long total_ns = 0;
   struct timespec start, end;
-  long long time_ns;
   int fd, ret;
 
+  struct mmc_ioc_cmd wdata;
+  memset(&wdata, 0, sizeof(wdata));
+  wdata.blksz = ONE_BLOCK_SIZE;
+  wdata.flags = MMC_RSP_SPI_R1 | MMC_RSP_R1 | MMC_CMD_ADTC;
+
   char *operation = NULL;
+  char *byte_no_str = NULL;
+  char *count_str = NULL;
   char *input_file = NULL;
   char *output_file = NULL;
-
-  cmd.cur_block = -1;
-  cmd.block_num = -1;
+  unsigned int count;
+  unsigned int byte_no;
 
   static struct option long_opts[] = {
       {"op", required_argument, 0, OPT_OP},
-      {"block", required_argument, 0, OPT_BLOCK},
+      {"byte", required_argument, 0, OPT_BYTE},
       {"count", required_argument, 0, OPT_COUNT},
       {"input", required_argument, 0, OPT_INPUT},
       {"output", required_argument, 0, OPT_OUTPUT},
@@ -60,18 +75,12 @@ int main(int argc, char *argv[]) {
       operation = optarg;
       break;
 
-    case OPT_BLOCK:
-      if (parse_int(optarg, &cmd.cur_block) < 0) {
-        fprintf(stderr, "Invalid block\n");
-        return 1;
-      }
+    case OPT_BYTE:
+      byte_no_str = optarg;
       break;
 
     case OPT_COUNT:
-      if (parse_int(optarg, &cmd.block_num) < 0 || cmd.block_num <= 0) {
-        fprintf(stderr, "Invalid count\n");
-        return 1;
-      }
+      count_str = optarg;
       break;
 
     case OPT_INPUT:
@@ -83,38 +92,82 @@ int main(int argc, char *argv[]) {
       break;
 
     default:
-      fprintf(stderr, "Invalid arguments\n");
+      fprintf(stderr, "Unknown option or missing argument\n");
       return 1;
     }
   }
 
-  if (!operation || cmd.cur_block < 0 || cmd.block_num <= 0) {
-    fprintf(stderr,
-            "Usage:\n"
-            "--op <read_single|read_multiple|write_single|write_multiple>\n"
-            "--block <num>\n"
-            "--count <num>\n"
-            "[--input file]  (for write only)\n"
-            "[--output file] (for read only)\n");
+  if (!operation || !byte_no_str || !count_str) {
+      fprintf(stderr, 
+        "Usage:\n"
+        "--op <read_single|read_multiple|write_single|write_multiple>\n"
+        "--byte <num>\n"
+        "--count <num>\n"
+        "[--input file]  (for write only)\n"
+        "[--output file] (for read only)\n");
+        return 1;
+  }
+
+  if (strcmp(operation, "read_single") == 0) {
+    wdata.opcode = MMC_READ_SINGLE_BLOCK;
+    wdata.write_flag = 0;
+
+  } else if (strcmp(operation, "read_multiple") == 0) {
+    wdata.opcode = MMC_READ_MULTIPLE_BLOCK;
+    wdata.write_flag = 0;
+
+  } else if (strcmp(operation, "write_single") == 0) {
+    wdata.opcode = MMC_WRITE_BLOCK;
+    wdata.write_flag = 1;
+
+  } else if (strcmp(operation, "write_multiple") == 0) {
+    wdata.opcode = MMC_WRITE_MULTIPLE_BLOCK;
+    wdata.write_flag = 1;
+
+  } else {
+    fprintf(stderr, "Unknown operation\n");
     return 1;
   }
 
-  fd = open("/dev/virtual_mmc_driver", O_RDWR);
+  if (parse_int(byte_no_str, &byte_no) < 0 || byte_no > MAX_BYTE_POS) {
+    fprintf(stderr, "--byte_no argument must be a non-negative number not exceeding 1 048 064\n");
+    return 1;
+  }
+
+  if (parse_int(count_str, &count) < 0 || count == 0
+  || count > MAX_BLOCKS) {
+    fprintf(stderr, "--count argument must be a positive number not exceeding 2048\n");
+    return 1;
+  }
+
+  if (byte_no % ONE_BLOCK_SIZE != 0) {
+    fprintf(stderr, "--byte_no argument must be 512 aligned\n");
+    return 1;
+  }
+
+  if (byte_no + count * ONE_BLOCK_SIZE > MAX_BYTE_POS + 1) {
+    fprintf(stderr, "--count argument must be matched with --byte_no argument\n");
+    return 1;
+  }
+  wdata.arg = (__u32)byte_no;
+  wdata.blocks = count;
+
+  fd = open(DEVICE_PATH, O_RDWR);
   if (fd < 0) {
-    fprintf(stderr, "Failed to open device\n");
+    fprintf(stderr, "ERROR: failed to open device\n");
     return 1;
   }
 
-  char *buffer = NULL;
-
-  if (strstr(operation, "write")) {
-
-    if (!input_file) {
-      fprintf(stderr, "ERROR: write requires --input file\n");
-      close(fd);
-      return 1;
+  char *data = NULL;
+  if (wdata.write_flag) {
+    if (output_file) {
+        fprintf(stderr, "--output not allowed for write operations\n");
+        return 1;
     }
-
+    if (!input_file) {
+        fprintf(stderr, "Write requires --input file\n");
+        return 1;
+    }
     FILE *f = fopen(input_file, "rb");
     if (!f) {
       fprintf(stderr, "ERROR: cannot open input file\n");
@@ -122,96 +175,76 @@ int main(int argc, char *argv[]) {
       return 1;
     }
 
-    buffer = malloc(cmd.block_num * ONE_BLOCK_SIZE);
-    if (!buffer) {
-      fprintf(stderr, "Memory allocation failed\n");
+    data = malloc(count * ONE_BLOCK_SIZE);
+    if (!data) {
+      fprintf(stderr, "ERROR: memory allocation failed\n");
       fclose(f);
       close(fd);
       return 1;
     }
 
-    size_t r = fread(buffer, 1, cmd.block_num * ONE_BLOCK_SIZE, f);
+    size_t r = fread(data, 1, count * ONE_BLOCK_SIZE, f);
 
     fclose(f);
 
-    if (r == 0) {
-      fprintf(stderr, "ERROR: file is empty or read failed\n");
-      free(buffer);
+    if (r != (size_t)count * ONE_BLOCK_SIZE) {
+      fprintf(stderr, "ERROR: file is not full or read failed\n");
+      free(data);
       close(fd);
       return 1;
     }
-
-    cmd.data = buffer;
   }
-
-  if (strstr(operation, "read")) {
-
+  else {
+    if (input_file) {
+      fprintf(stderr, "--input not allowed for read operations\n");
+      return 1;
+    }
     if (!output_file) {
-      fprintf(stderr, "ERROR: read requires --output file\n");
+      fprintf(stderr, "Read requires --output file\n");
+      return 1;
+    }
+    data = malloc(count * ONE_BLOCK_SIZE);
+    if (!data) {
+      fprintf(stderr, "ERROR: memory allocation failed\n");
       close(fd);
       return 1;
     }
+  }
 
-    buffer = malloc(cmd.block_num * ONE_BLOCK_SIZE);
-    if (!buffer) {
-      fprintf(stderr, "Memory allocation failed\n");
+  mmc_ioc_cmd_set_data(wdata, data);
+
+  for (int i = 0; i < REPEATS; i++) {
+
+    clock_gettime(CLOCK_MONOTONIC_RAW, &start);
+    ret = ioctl(fd, MMC_IOC_CMD, &wdata);
+    clock_gettime(CLOCK_MONOTONIC_RAW, &end);
+    if (ret < 0) {
+      fprintf(stderr, "ERROR: operation failed, code: %d\n", ret);
+      free(data);
       close(fd);
       return 1;
     }
-
-    cmd.data = buffer;
-  }
-
-  clock_gettime(CLOCK_MONOTONIC_RAW, &start);
-
-  if (strncmp(operation, "read_single", 11) == 0) {
-    ret = ioctl(fd, VMMC_READ_SINGLE_BLOCK, &cmd);
-
-  } else if (strncmp(operation, "read_multiple", 8) == 0) {
-    ret = ioctl(fd, VMMC_READ_MULTIPLE_BLOCK, &cmd);
-
-  } else if (strncmp(operation, "write_single", 12) == 0) {
-    ret = ioctl(fd, VMMC_WRITE_SINGLE_BLOCK, &cmd);
-
-  } else if (strncmp(operation, "write_multiple", 14) == 0) {
-    ret = ioctl(fd, VMMC_WRITE_MULTIPLE_BLOCK, &cmd);
-
-  } else {
-    fprintf(stderr, "Unknown operation\n");
-    free(buffer);
-    close(fd);
-    return 1;
-  }
-
-  clock_gettime(CLOCK_MONOTONIC_RAW, &end);
-
-  time_ns =
+    total_ns +=
       (end.tv_sec - start.tv_sec) * SEC_TO_NS + (end.tv_nsec - start.tv_nsec);
-
-  if (ret < 0) {
-    fprintf(stderr, "Operation failed, code: %d\n", ret);
-  } else {
-
-    if (strstr(operation, "read")) {
-
-      FILE *f = fopen(output_file, "wb");
-      if (!f) { 
-        fprintf(stderr, "ERROR: cannot open output file\n");
-        free(buffer);
-        close(fd);
-        return 1;
-      }
-
-      fwrite(buffer, 1, cmd.block_num * ONE_BLOCK_SIZE, f);
-
-      fclose(f);
-    }
-
-    printf("Operation successful\n");
-    printf("Time: %.8f ms\n", (double)time_ns / NS_TO_MS);
   }
 
-  free(buffer);
+  if (!wdata.write_flag) {
+
+    FILE *f = fopen(output_file, "wb");
+    if (!f) { 
+      fprintf(stderr, "ERROR: cannot open output file\n");
+      free(data);
+      close(fd);
+      return 1;
+    }
+
+    fwrite(data, 1, count * ONE_BLOCK_SIZE, f);
+    fclose(f);
+  }
+
+  printf("Average time: %.5f ns\n", (double)total_ns/REPEATS);
+
+  free(data);
   close(fd);
   return 0;
 }
