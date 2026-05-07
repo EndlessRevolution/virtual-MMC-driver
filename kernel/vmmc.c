@@ -2,6 +2,7 @@
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/cdev.h>
+#include <linux/device.h>
 #include <linux/slab.h>
 #include <linux/mmc/mmc.h>
 #include <linux/mmc/ioctl.h>
@@ -14,9 +15,10 @@
 #define DEVICE_NAME "virtual_mmc_driver"
 
 static dev_t dev_num;
-static int major;
-static int minor;
-struct cdev *vmmc_cdev;
+static struct device *vmmc_device;
+static struct class *vmmc_class;
+static struct cdev vmmc_cdev;
+
 static struct mutex mutex;
 static char *vmmc_storage;
 
@@ -182,61 +184,81 @@ static const struct file_operations vmmc_fops = {
 
 static int vmmc_init(void)
 {
-	int ret = 0;
+	int ret;
 
 	ret = alloc_chrdev_region(&dev_num, 0, 1, DEVICE_NAME);
-	if (ret < 0) {
-		pr_alert("vmmc: failed to allocate device number\n");
-		goto out;
-	}
-
-	major = MAJOR(dev_num);
-	minor = MINOR(dev_num);
-	pr_info("DEVICE --> %s,[ Major = %d ], [ minor  = %d ]\n",
-		DEVICE_NAME, major, minor);
-
-	vmmc_cdev = cdev_alloc();
-	if (!vmmc_cdev) {
-		pr_alert("vmmc: failed to allocate cdev\n");
-		ret = -ENOMEM;
-		goto unregister_out;
-	}
-
-	vmmc_cdev->ops = &vmmc_fops;
-	vmmc_cdev->owner = THIS_MODULE;
-
-	ret = cdev_add(vmmc_cdev, dev_num, 1);
 	if (ret) {
-		pr_alert("vmmc: failed to add cdev to the kernel\n");
-		goto free_out;
+		pr_err("vmmc: alloc_chrdev_region failed witn code %d\n", ret);
+		return ret;
+	}
+
+	pr_info("vmmc: registered device number major=%d minor=%d\n",
+		MAJOR(dev_num), MINOR(dev_num));
+
+	cdev_init(&vmmc_cdev, &vmmc_fops);
+
+	ret = cdev_add(&vmmc_cdev, dev_num, 1);
+	if (ret) {
+		pr_err("vmmc: cdev_add failed witn code %d\n", ret);
+		goto unregister_region;
+	}
+
+	vmmc_class = class_create("vmmc");
+	if (IS_ERR(vmmc_class)) {
+		ret = PTR_ERR(vmmc_class);
+		pr_err("vmmc: class_create failed witn code %d\n", ret);
+		goto del_cdev;
+	}
+
+	vmmc_device = device_create(
+		vmmc_class,
+		NULL,
+		dev_num,
+		NULL,
+		DEVICE_NAME
+	);
+
+	if (IS_ERR(vmmc_device)) {
+		ret = PTR_ERR(vmmc_device);
+		pr_err("vmmc: device_create failed witn code %d\n", ret);
+		goto destroy_class;
 	}
 
 	vmmc_storage = kzalloc(VMMC_MEMORY, GFP_KERNEL);
 	if (!vmmc_storage) {
-		pr_alert("vmmc: failed to allocate memory for mmc\n");
+		pr_err("vmmc: failed to allocate storage buffer\n");
 		ret = -ENOMEM;
-		goto free_out;
+		goto destroy_device;
 	}
 
 	mutex_init(&mutex);
+	pr_info("vmmc: module loaded\n");
 
 	return 0;
 
-free_out:
-	cdev_del(vmmc_cdev);
-unregister_out:
+destroy_device:
+	device_destroy(vmmc_class, dev_num);
+
+destroy_class:
+	class_destroy(vmmc_class);
+
+del_cdev:
+	cdev_del(&vmmc_cdev);
+
+unregister_region:
 	unregister_chrdev_region(dev_num, 1);
-out:
 	return ret;
 }
 
 static void vmmc_exit(void)
 {
 	mutex_destroy(&mutex);
-	cdev_del(vmmc_cdev);
-	unregister_chrdev_region(dev_num, 1);
 	kfree(vmmc_storage);
-	pr_info("vmmc: unload module\n");
+	device_destroy(vmmc_class, dev_num);
+	class_destroy(vmmc_class);
+	cdev_del(&vmmc_cdev);
+	unregister_chrdev_region(dev_num, 1);
+	pr_info("module unloaded\n");
 }
 
 module_init(vmmc_init);
