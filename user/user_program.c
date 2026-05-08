@@ -44,6 +44,7 @@ int parse_int(const char *str, unsigned int *out) {
 
 int main(int argc, char *argv[]) {
   unsigned long long total_ns = 0;
+  insigned int total_blocks = 0;
   struct timespec start, end;
   int fd, ret;
 
@@ -219,7 +220,7 @@ int main(int argc, char *argv[]) {
     ret = ioctl(fd, MMC_IOC_CMD, &wdata);
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     if (ret < 0) {
-      fprintf(stderr, "ERROR: operation failed, code: %d\n", ret);
+      fprintf(stderr, "Operation failed with code %d\n", ret);
       free(data);
       close(fd);
       return 1;
@@ -227,6 +228,7 @@ int main(int argc, char *argv[]) {
     total_ns +=
       (end.tv_sec - start.tv_sec) * SEC_TO_NS + (end.tv_nsec - start.tv_nsec);
   }
+  total_blocks = REPEATS * count;
 
   if (!wdata.write_flag) {
 
@@ -243,6 +245,7 @@ int main(int argc, char *argv[]) {
   }
 
   printf("Average time: %.5f ns\n", (double)total_ns/REPEATS);
+  printf("Average blocks per ns: %.5f ns\n", (double)total_blocks/total_ns);
 
   free(data);
   close(fd);
