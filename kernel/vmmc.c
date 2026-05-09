@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+/* SPDX-License-Identifier: GPL-2.0-only */
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/cdev.h>
@@ -10,14 +10,14 @@
 #include <linux/mutex.h>
 
 #define ONE_BLOCK_SIZE 512
-#define MAX_BLOCKS 2048
-#define VMMC_MEMORY (ONE_BLOCK_SIZE * MAX_BLOCKS)
-#define DEVICE_NAME "virtual_mmc_driver"
+#define MAX_BLOCKS     2048
+#define VMMC_MEMORY    (ONE_BLOCK_SIZE * MAX_BLOCKS)
+#define DEVICE_NAME    "virtual_mmc_driver"
 
-static dev_t dev_num;
 static struct device *vmmc_device;
 static struct class *vmmc_class;
 static struct cdev vmmc_cdev;
+static dev_t dev_num;
 
 static struct mutex mutex;
 static char *vmmc_storage;
@@ -43,7 +43,7 @@ static inline int validate_single_operation(struct mmc_ioc_cmd *wdata)
 {
 	if (wdata->arg % ONE_BLOCK_SIZE != 0) {
 		pr_err("vmmc: indention must be 512 aligned\n");
-	} 
+	}
 	if ((wdata->arg / ONE_BLOCK_SIZE) >= MAX_BLOCKS) {
 		pr_err("vmmc: mmc card memory overflow\n");
 		return -EINVAL;
@@ -77,13 +77,13 @@ static int read_blocks(struct mmc_ioc_cmd *wdata, char *tmp, char *vmmc_buffer)
 	unsigned int cur_block = wdata->arg / ONE_BLOCK_SIZE;
 	char __user *user_ptr = u64_to_user_ptr(wdata->data_ptr);
 	for (unsigned int i = 0; i < wdata->blocks; i++) {
-		char *start_copy = vmmc_buffer +
-			(cur_block + i) * ONE_BLOCK_SIZE;
+		char *start_copy =
+			vmmc_buffer + (cur_block + i) * ONE_BLOCK_SIZE;
 
 		memcpy(tmp, start_copy, ONE_BLOCK_SIZE);
 
-		if (copy_to_user(user_ptr + i * ONE_BLOCK_SIZE,
-				 tmp, ONE_BLOCK_SIZE)) {
+		if (copy_to_user(user_ptr + i * ONE_BLOCK_SIZE, tmp,
+				 ONE_BLOCK_SIZE)) {
 			pr_err("vmmc: error copy data to user\n");
 			return -EFAULT;
 		}
@@ -96,8 +96,8 @@ static int write_blocks(struct mmc_ioc_cmd *wdata, char *tmp, char *vmmc_buffer)
 	unsigned int cur_block = wdata->arg / ONE_BLOCK_SIZE;
 	char __user *user_ptr = u64_to_user_ptr(wdata->data_ptr);
 	for (unsigned int i = 0; i < wdata->blocks; i++) {
-		char *start_paste = vmmc_buffer +
-			(cur_block + i) * ONE_BLOCK_SIZE;
+		char *start_paste =
+			vmmc_buffer + (cur_block + i) * ONE_BLOCK_SIZE;
 
 		if (copy_from_user(tmp, user_ptr + i * ONE_BLOCK_SIZE,
 				   ONE_BLOCK_SIZE)) {
@@ -111,9 +111,7 @@ static int write_blocks(struct mmc_ioc_cmd *wdata, char *tmp, char *vmmc_buffer)
 
 static long vmmc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
-
-	if (cmd != MMC_IOC_CMD)
-	{
+	if (cmd != MMC_IOC_CMD) {
 		return -ENOIOCTLCMD;
 	}
 
@@ -131,7 +129,8 @@ static long vmmc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		goto unlock_out;
 	}
 
-	ret = copy_from_user(&wdata, (struct mmc_ioc_cmd __user *)arg, sizeof(wdata));
+	ret = copy_from_user(&wdata, (struct mmc_ioc_cmd __user *)arg,
+			     sizeof(wdata));
 	if (ret) {
 		pr_err("vmmc: error copy data from user\n");
 		ret = -EFAULT;
@@ -210,13 +209,8 @@ static int vmmc_init(void)
 		goto del_cdev;
 	}
 
-	vmmc_device = device_create(
-		vmmc_class,
-		NULL,
-		dev_num,
-		NULL,
-		DEVICE_NAME
-	);
+	vmmc_device =
+		device_create(vmmc_class, NULL, dev_num, NULL, DEVICE_NAME);
 
 	if (IS_ERR(vmmc_device)) {
 		ret = PTR_ERR(vmmc_device);
