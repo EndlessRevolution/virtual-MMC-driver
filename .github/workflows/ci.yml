@@ -7,59 +7,21 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
-    env:
-      KERNEL_VERSION: "6.6.10"
-
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
-      - name: Install packages
+      - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential \
-            bc \
-            flex \
-            bison \
-            libssl-dev \
-            libelf-dev \
-            wget \
-            perl
+            linux-headers-$(uname -r) \
+            sparse \
+            clang-format \
+            clang-tidy
 
-      - name: Cache kernel source
-        id: cache-kernel
-        uses: actions/cache@v4
-        with:
-          path: linux-${{ env.KERNEL_VERSION }}
-          key: kernel-${{ env.KERNEL_VERSION }}
+      - name: Make scripts executable
+        run: chmod +x ci/*.sh
 
-      - name: Download Linux kernel
-        if: steps.cache-kernel.outputs.cache-hit != 'true'
-        run: |
-          wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.tar.xz
-          tar -xf linux-${KERNEL_VERSION}.tar.xz
-
-      - name: Build kernel headers
-        run: |
-          cd linux-${KERNEL_VERSION}
-          make defconfig
-          make modules_prepare
-
-      - name: Build module
-        run: |
-          cd kernel
-          make -C ../linux-${KERNEL_VERSION} M=$(pwd) modules
-
-      - name: Run checkpatch
-        run: |
-          wget https://raw.githubusercontent.com/torvalds/linux/master/scripts/checkpatch.pl
-          chmod +x checkpatch.pl
-          ./checkpatch.pl --no-tree --file kernel/*.c || true
-
-      - name: Upload module artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: vmmc-module
-          path: kernel/*.ko
+      - name: Run all tests
+        run: sudo ./ci/all.sh
