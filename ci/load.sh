@@ -1,11 +1,10 @@
 #!/bin/bash
-
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-KERNEL_DIR="$SCRIPT_DIR/../kernel"
+BASEDIR="$(realpath "$(dirname "${BASH_SOURCE[0]}")")"
+KERNELDIR="$BASEDIR/../kernel"
 
-cd "$KERNEL_DIR"
+cd "$KERNELDIR"
 
 make
 
@@ -15,3 +14,5 @@ if lsmod | grep -q "^vmmc"; then
 fi
 
 sudo insmod vmmc.ko
+
+echo "Module loaded"
