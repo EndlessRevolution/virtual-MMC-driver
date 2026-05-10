@@ -27,7 +27,7 @@
 
 enum { OPT_OP = 1, OPT_BYTE, OPT_COUNT, OPT_INPUT, OPT_OUTPUT };
 
-int parse_int(const char *str, unsigned int *out) {
+int parse_int(const char *str, unsigned long *out) {
     char *endptr;
     long  val;
 
@@ -38,13 +38,13 @@ int parse_int(const char *str, unsigned int *out) {
         return -1;
     if (val < 0)
         return -1;
-    *out = (unsigned int)val;
+    *out = (unsigned long)val;
     return 0;
 }
 
 int main(int argc, char *argv[]) {
     unsigned long long total_ns = 0;
-    insigned int       total_blocks = 0;
+    unsigned long long total_blocks = 0;
     struct timespec    start, end;
     int                fd, ret;
 
@@ -58,8 +58,8 @@ int main(int argc, char *argv[]) {
     char                *count_str = NULL;
     char                *input_file = NULL;
     char                *output_file = NULL;
-    unsigned int         count;
-    unsigned int         byte_no;
+    unsigned long        count;
+    unsigned long        byte_no;
 
     static struct option long_opts[] = {
         {"op", required_argument, 0, OPT_OP},
@@ -154,7 +154,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     wdata.arg = (__u32)byte_no;
-    wdata.blocks = count;
+    wdata.blocks = (unsigned int)count;
 
     fd = open(DEVICE_PATH, O_RDWR);
     if (fd < 0) {
@@ -246,8 +246,9 @@ int main(int argc, char *argv[]) {
         fclose(f);
     }
 
-    printf("Average time: %.5f ns\n", (double)total_ns / REPEATS);
-    printf("Average blocks per ns: %.5f ns\n", (double)total_blocks / total_ns);
+    printf("Average time: %.5Lf ns\n", (long double)total_ns / REPEATS);
+    printf("Average blocks per ns: %.5Lf ns\n",
+           (long double)total_blocks / total_ns);
 
     free(data);
     close(fd);
