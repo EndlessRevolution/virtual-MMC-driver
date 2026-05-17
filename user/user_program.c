@@ -1,7 +1,9 @@
+#include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
 #include <limits.h>
 #include <linux/mmc/ioctl.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,20 +14,41 @@
 #define SEC_TO_NS                1000000000LL
 #define REPEATS                  1000
 #define ONE_BLOCK_SIZE           512U
-#define MAX_BLOCKS               2048U
-#define MAX_BYTE_POS             1048064U
 #define DEVICE_PATH              "/dev/virtual_mmc_driver"
 
 #define MMC_RSP_SPI_R1           (1 << 0)
 #define MMC_RSP_R1               (1 << 1)
 #define MMC_CMD_ADTC             (1 << 5)
 
+#define R1_READY_FOR_DATA        (1 << 8)
+#define R1_OUT_OF_RANGE          (1 << 31)
+#define R1_ADDRESS_ERROR         (1 << 30)
+#define R1_BLOCK_LEN_ERROR       (1 << 29)
+#define R1_ILLEGAL_COMMAND       (1 << 22)
+#define R1_STATUS(x)             ((x) & 0xFFF9A000)
+
 #define MMC_READ_SINGLE_BLOCK    17
 #define MMC_READ_MULTIPLE_BLOCK  18
 #define MMC_WRITE_BLOCK          24
 #define MMC_WRITE_MULTIPLE_BLOCK 25
 
-enum { OPT_OP = 1, OPT_BYTE, OPT_COUNT, OPT_INPUT, OPT_OUTPUT };
+enum { OPT_OP = 256, OPT_OFFSET, OPT_COUNT, OPT_INPUT, OPT_OUTPUT };
+
+int time_measure(struct timespec *start, struct timespec *end,
+                 struct mmc_ioc_cmd *wdata, int fd) {
+    int ret = 0;
+    clock_gettime(CLOCK_MONOTONIC_RAW, start);
+
+    for (int i = 0; i < REPEATS; i++) {
+
+        ret = ioctl(fd, MMC_IOC_CMD, wdata);
+        if (ret < 0 || R1_STATUS(wdata->response[0]))
+            break;
+    }
+
+    clock_gettime(CLOCK_MONOTONIC_RAW, end);
+    return ret;
+}
 
 int parse_int(const char *str, unsigned long *out) {
     char *endptr;
@@ -47,6 +70,7 @@ int main(int argc, char *argv[]) {
     unsigned long long total_blocks = 0;
     struct timespec    start, end;
     int                fd, ret;
+    int                rc = 0;
 
     struct mmc_ioc_cmd wdata;
     memset(&wdata, 0, sizeof(wdata));
@@ -54,16 +78,17 @@ int main(int argc, char *argv[]) {
     wdata.flags = MMC_RSP_SPI_R1 | MMC_RSP_R1 | MMC_CMD_ADTC;
 
     char                *operation = NULL;
-    char                *byte_no_str = NULL;
+    char                *offset_str = NULL;
     char                *count_str = NULL;
     char                *input_file = NULL;
     char                *output_file = NULL;
     unsigned long        count;
     unsigned long        byte_no;
+    unsigned long        opcode;
 
     static struct option long_opts[] = {
         {"op", required_argument, 0, OPT_OP},
-        {"byte", required_argument, 0, OPT_BYTE},
+        {"offset", required_argument, 0, OPT_OFFSET},
         {"count", required_argument, 0, OPT_COUNT},
         {"input", required_argument, 0, OPT_INPUT},
         {"output", required_argument, 0, OPT_OUTPUT},
@@ -76,8 +101,8 @@ int main(int argc, char *argv[]) {
             operation = optarg;
             break;
 
-        case OPT_BYTE:
-            byte_no_str = optarg;
+        case OPT_OFFSET:
+            offset_str = optarg;
             break;
 
         case OPT_COUNT:
@@ -98,67 +123,39 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    if (!operation || !byte_no_str || !count_str) {
-        fprintf(stderr,
-                "Usage:\n"
-                "--op <read_single|read_multiple|write_single|write_multiple>\n"
-                "--byte <num>\n"
-                "--count <num>\n"
-                "[--input file]  (for write only)\n"
-                "[--output file] (for read only)\n");
+    if (!operation || !offset_str || !count_str) {
+        fprintf(stderr, "Usage:\n"
+                        "--op <operation code>\n"
+                        "--offset <byte num>\n"
+                        "--count <block num>\n"
+                        "[--input file]  (for write only)\n"
+                        "[--output file] (for read only)\n");
         return 1;
     }
 
-    if (strcmp(operation, "read_single") == 0) {
-        wdata.opcode = MMC_READ_SINGLE_BLOCK;
-        wdata.write_flag = 0;
-
-    } else if (strcmp(operation, "read_multiple") == 0) {
-        wdata.opcode = MMC_READ_MULTIPLE_BLOCK;
-        wdata.write_flag = 0;
-
-    } else if (strcmp(operation, "write_single") == 0) {
-        wdata.opcode = MMC_WRITE_BLOCK;
-        wdata.write_flag = 1;
-
-    } else if (strcmp(operation, "write_multiple") == 0) {
-        wdata.opcode = MMC_WRITE_MULTIPLE_BLOCK;
-        wdata.write_flag = 1;
-
-    } else {
-        fprintf(stderr, "Unknown operation\n");
+    if (parse_int(offset_str, &byte_no) < 0 ||
+        parse_int(count_str, &count) < 0 || parse_int(operation, &opcode) < 0) {
+        fprintf(stderr, "All arguments must be a non-negative number\n");
         return 1;
     }
 
-    if (parse_int(byte_no_str, &byte_no) < 0 || byte_no > MAX_BYTE_POS) {
-        fprintf(stderr, "--byte_no argument must be a non-negative number not "
-                        "exceeding 1 048 064\n");
-        return 1;
-    }
-
-    if (parse_int(count_str, &count) < 0 || count == 0 || count > MAX_BLOCKS) {
-        fprintf(
-            stderr,
-            "--count argument must be a positive number not exceeding 2048\n");
-        return 1;
-    }
-
-    if (byte_no % ONE_BLOCK_SIZE != 0) {
-        fprintf(stderr, "--byte_no argument must be 512 aligned\n");
-        return 1;
-    }
-
-    if (byte_no + count * ONE_BLOCK_SIZE > MAX_BYTE_POS + 1) {
-        fprintf(stderr,
-                "--count argument must be matched with --byte_no argument\n");
-        return 1;
-    }
+    wdata.opcode = (__u32)opcode;
     wdata.arg = (__u32)byte_no;
     wdata.blocks = (unsigned int)count;
 
+    switch (opcode) {
+    case MMC_WRITE_BLOCK:
+    case MMC_WRITE_MULTIPLE_BLOCK:
+        wdata.write_flag = 1;
+        break;
+
+    default:
+        wdata.write_flag = 0;
+    }
+
     fd = open(DEVICE_PATH, O_RDWR);
     if (fd < 0) {
-        fprintf(stderr, "ERROR: failed to open device\n");
+        fprintf(stderr, "Failed to open device\n");
         return 1;
     }
 
@@ -166,25 +163,27 @@ int main(int argc, char *argv[]) {
     if (wdata.write_flag) {
         if (output_file) {
             fprintf(stderr, "--output not allowed for write operations\n");
-            return 1;
+            rc = 1;
+            goto close_out;
         }
         if (!input_file) {
             fprintf(stderr, "Write requires --input file\n");
-            return 1;
+            rc = 1;
+            goto close_out;
         }
         FILE *f = fopen(input_file, "rb");
         if (!f) {
-            fprintf(stderr, "ERROR: cannot open input file\n");
-            close(fd);
-            return 1;
+            perror("fopen");
+            rc = 1;
+            goto close_out;
         }
 
         data = malloc(count * ONE_BLOCK_SIZE);
         if (!data) {
-            fprintf(stderr, "ERROR: memory allocation failed\n");
+            fprintf(stderr, "Memory allocation failed\n");
             fclose(f);
-            close(fd);
-            return 1;
+            rc = 1;
+            goto close_out;
         }
 
         size_t r = fread(data, 1, count * ONE_BLOCK_SIZE, f);
@@ -192,57 +191,77 @@ int main(int argc, char *argv[]) {
         fclose(f);
 
         if (r != (size_t)count * ONE_BLOCK_SIZE) {
-            fprintf(stderr, "ERROR: file is not full or read failed\n");
-            free(data);
-            close(fd);
-            return 1;
+            fprintf(stderr, "File is not full or read failed\n");
+            rc = 1;
+            goto free_out;
         }
     } else {
         if (input_file) {
             fprintf(stderr, "--input not allowed for read operations\n");
-            return 1;
+            rc = 1;
+            goto close_out;
         }
         if (!output_file) {
             fprintf(stderr, "Read requires --output file\n");
-            return 1;
+            rc = 1;
+            goto close_out;
         }
         data = malloc(count * ONE_BLOCK_SIZE);
         if (!data) {
-            fprintf(stderr, "ERROR: memory allocation failed\n");
-            close(fd);
-            return 1;
+            fprintf(stderr, "Memory allocation failed\n");
+            rc = 1;
+            goto close_out;
         }
     }
 
     mmc_ioc_cmd_set_data(wdata, data);
 
-    for (int i = 0; i < REPEATS; i++) {
+    ret = time_measure(&start, &end, &wdata, fd);
 
-        clock_gettime(CLOCK_MONOTONIC_RAW, &start);
-        ret = ioctl(fd, MMC_IOC_CMD, &wdata);
-        clock_gettime(CLOCK_MONOTONIC_RAW, &end);
-        if (ret < 0) {
-            fprintf(stderr, "Operation failed with code %d\n", ret);
-            free(data);
-            close(fd);
-            return 1;
-        }
-        total_ns += (end.tv_sec - start.tv_sec) * SEC_TO_NS +
-                    (end.tv_nsec - start.tv_nsec);
+    if (ret < 0 || R1_STATUS(wdata.response[0])) {
+
+        uint32_t status = wdata.response[0];
+
+        if (status & R1_ADDRESS_ERROR)
+            fprintf(stderr, "vmmc: Address error\n");
+
+        if (status & R1_ILLEGAL_COMMAND)
+            fprintf(stderr, "vmmc: Illegal command\n");
+
+        if (status & R1_BLOCK_LEN_ERROR)
+            fprintf(stderr, "vmmc: Block length error\n");
+
+        if (status & R1_OUT_OF_RANGE)
+            fprintf(stderr, "vmmc: Out of range\n");
+
+        if (ret < 0)
+            perror("ioctl");
+
+        rc = 1;
+        goto free_out;
     }
+
+    total_ns =
+        (end.tv_sec - start.tv_sec) * SEC_TO_NS + (end.tv_nsec - start.tv_nsec);
     total_blocks = REPEATS * count;
 
     if (!wdata.write_flag) {
 
         FILE *f = fopen(output_file, "wb");
         if (!f) {
-            fprintf(stderr, "ERROR: cannot open output file\n");
-            free(data);
-            close(fd);
-            return 1;
+            perror("fopen");
+            rc = 1;
+            goto free_out;
         }
 
-        fwrite(data, 1, count * ONE_BLOCK_SIZE, f);
+        size_t written = fwrite(data, 1, count * ONE_BLOCK_SIZE, f);
+
+        if (written != (size_t)count * ONE_BLOCK_SIZE) {
+            fprintf(stderr, "Write to output file failed\n");
+            fclose(f);
+            rc = 1;
+            goto free_out;
+        }
         fclose(f);
     }
 
@@ -250,7 +269,9 @@ int main(int argc, char *argv[]) {
     printf("Average blocks per ns: %.5Lf ns\n",
            (long double)total_blocks / total_ns);
 
+free_out:
     free(data);
+close_out:
     close(fd);
-    return 0;
+    return rc;
 }

@@ -9,10 +9,10 @@
 #include <linux/uaccess.h>
 #include <linux/mutex.h>
 
-#define ONE_BLOCK_SIZE 512
-#define MAX_BLOCKS     2048
 #define VMMC_MEMORY    (ONE_BLOCK_SIZE * MAX_BLOCKS)
 #define DEVICE_NAME    "virtual_mmc_driver"
+#define MAX_BLOCKS     2048
+#define ONE_BLOCK_SIZE 512
 
 static struct device *vmmc_device;
 static struct class *vmmc_class;
@@ -39,43 +39,55 @@ static int release(struct inode *inode, struct file *filp)
 	return 0;
 }
 
-static inline int validate_single_operation(struct mmc_ioc_cmd *wdata)
+static void validate_single_operation(struct mmc_ioc_cmd *wdata)
 {
-	if (wdata->arg % ONE_BLOCK_SIZE != 0) {
-		pr_err("vmmc: indention must be 512 aligned\n");
-	}
-	if ((wdata->arg / ONE_BLOCK_SIZE) >= MAX_BLOCKS) {
-		pr_err("vmmc: mmc card memory overflow\n");
-		return -EINVAL;
-	}
+	__u32 status = R1_READY_FOR_DATA;
+	unsigned int cur_block = wdata->arg / ONE_BLOCK_SIZE;
+
 	if (wdata->blocks != 1) {
 		pr_err("vmmc: wrong number of blocks\n");
-		return -EINVAL;
+		status |= R1_BLOCK_LEN_ERROR;
 	}
-	return 0;
-}
 
-static inline int validate_multiple_operation(struct mmc_ioc_cmd *wdata)
-{
-	unsigned int cur_block = wdata->arg / ONE_BLOCK_SIZE;
 	if (wdata->arg % ONE_BLOCK_SIZE != 0) {
-		pr_err("vmmc: indention must be 512 aligned\n");
+		pr_err("vmmc: offset must be 512 aligned\n");
+		status |= R1_ADDRESS_ERROR;
 	}
+
 	if (cur_block >= MAX_BLOCKS) {
 		pr_err("vmmc: mmc card memory overflow\n");
-		return -EINVAL;
+		status |= R1_OUT_OF_RANGE;
 	}
-	if (!wdata->blocks) {
+	wdata->response[0] = status;
+}
+
+static void validate_multiple_operation(struct mmc_ioc_cmd *wdata)
+{
+	__u32 status = R1_READY_FOR_DATA;
+	unsigned int cur_block = wdata->arg / ONE_BLOCK_SIZE;
+
+	if (wdata->blocks <= 1) {
 		pr_err("vmmc: wrong number of blocks\n");
-		return -EINVAL;
+		status |= R1_BLOCK_LEN_ERROR;
 	}
-	return 0;
+
+	if (wdata->arg % ONE_BLOCK_SIZE != 0) {
+		pr_err("vmmc: offset must be 512 aligned\n");
+		status |= R1_ADDRESS_ERROR;
+	}
+
+	if (wdata->blocks > MAX_BLOCKS - cur_block) {
+		pr_err("vmmc: mmc card memory overflow\n");
+		status |= R1_OUT_OF_RANGE;
+	}
+	wdata->response[0] = status;
 }
 
 static int read_blocks(struct mmc_ioc_cmd *wdata, char *tmp, char *vmmc_buffer)
 {
 	unsigned int cur_block = wdata->arg / ONE_BLOCK_SIZE;
 	char __user *user_ptr = u64_to_user_ptr(wdata->data_ptr);
+
 	for (unsigned int i = 0; i < wdata->blocks; i++) {
 		char *start_copy =
 			vmmc_buffer + (cur_block + i) * ONE_BLOCK_SIZE;
@@ -84,7 +96,7 @@ static int read_blocks(struct mmc_ioc_cmd *wdata, char *tmp, char *vmmc_buffer)
 
 		if (copy_to_user(user_ptr + i * ONE_BLOCK_SIZE, tmp,
 				 ONE_BLOCK_SIZE)) {
-			pr_err("vmmc: error copy data to user\n");
+			pr_err("vmmc: error copy buffer to user\n");
 			return -EFAULT;
 		}
 	}
@@ -95,13 +107,14 @@ static int write_blocks(struct mmc_ioc_cmd *wdata, char *tmp, char *vmmc_buffer)
 {
 	unsigned int cur_block = wdata->arg / ONE_BLOCK_SIZE;
 	char __user *user_ptr = u64_to_user_ptr(wdata->data_ptr);
+
 	for (unsigned int i = 0; i < wdata->blocks; i++) {
 		char *start_paste =
 			vmmc_buffer + (cur_block + i) * ONE_BLOCK_SIZE;
 
 		if (copy_from_user(tmp, user_ptr + i * ONE_BLOCK_SIZE,
 				   ONE_BLOCK_SIZE)) {
-			pr_err("vmmc: error copy data from user\n");
+			pr_err("vmmc: error copy buffer from user\n");
 			return -EFAULT;
 		}
 		memcpy(start_paste, tmp, ONE_BLOCK_SIZE);
@@ -112,7 +125,8 @@ static int write_blocks(struct mmc_ioc_cmd *wdata, char *tmp, char *vmmc_buffer)
 static long vmmc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	if (cmd != MMC_IOC_CMD) {
-		return -ENOIOCTLCMD;
+		pr_err("vmmc: unknown ioctl command number\n");
+		return -ENOTTY;
 	}
 
 	char *vmmc_buffer = filp->private_data;
@@ -129,9 +143,8 @@ static long vmmc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		goto unlock_out;
 	}
 
-	ret = copy_from_user(&wdata, (struct mmc_ioc_cmd __user *)arg,
-			     sizeof(wdata));
-	if (ret) {
+	if (copy_from_user(&wdata, (struct mmc_ioc_cmd __user *)arg,
+			   sizeof(wdata))) {
 		pr_err("vmmc: error copy data from user\n");
 		ret = -EFAULT;
 		goto free_out;
@@ -139,32 +152,48 @@ static long vmmc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 	switch (wdata.opcode) {
 	case MMC_READ_SINGLE_BLOCK:
-		ret = validate_single_operation(&wdata);
-		if (!ret)
+		validate_single_operation(&wdata);
+
+		if (!R1_STATUS(wdata.response[0]))
 			ret = read_blocks(&wdata, tmp, vmmc_buffer);
+
 		break;
 
 	case MMC_READ_MULTIPLE_BLOCK:
-		ret = validate_multiple_operation(&wdata);
-		if (!ret)
+		validate_multiple_operation(&wdata);
+
+		if (!R1_STATUS(wdata.response[0]))
 			ret = read_blocks(&wdata, tmp, vmmc_buffer);
+
 		break;
 
 	case MMC_WRITE_BLOCK:
-		ret = validate_single_operation(&wdata);
-		if (!ret)
+		validate_single_operation(&wdata);
+
+		if (!R1_STATUS(wdata.response[0]))
 			ret = write_blocks(&wdata, tmp, vmmc_buffer);
+
 		break;
 
 	case MMC_WRITE_MULTIPLE_BLOCK:
-		ret = validate_multiple_operation(&wdata);
-		if (!ret)
+		validate_multiple_operation(&wdata);
+
+		if (!R1_STATUS(wdata.response[0]))
 			ret = write_blocks(&wdata, tmp, vmmc_buffer);
+
 		break;
 
 	default:
-		ret = -ENOIOCTLCMD;
+		pr_err("vmmc: unknown command");
+		wdata.response[0] |= R1_ILLEGAL_COMMAND;
+
 		break;
+	}
+
+	if (copy_to_user((struct mmc_ioc_cmd __user *)arg, &wdata,
+			 sizeof(wdata))) {
+		pr_err("vmmc: failed to copy response to user\n");
+		ret = -EFAULT;
 	}
 
 free_out:
