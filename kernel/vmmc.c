@@ -41,7 +41,7 @@ static int release(struct inode *inode, struct file *filp)
 
 static void validate_single_operation(struct mmc_ioc_cmd *wdata)
 {
-	__u32 status = R1_READY_FOR_DATA;
+	__u32 status = 0;
 	unsigned int cur_block = wdata->arg / ONE_BLOCK_SIZE;
 
 	if (wdata->blocks != 1) {
@@ -58,12 +58,12 @@ static void validate_single_operation(struct mmc_ioc_cmd *wdata)
 		pr_err("vmmc: mmc card memory overflow\n");
 		status |= R1_OUT_OF_RANGE;
 	}
-	wdata->response[0] = status;
+	wdata->response[0] |= status;
 }
 
 static void validate_multiple_operation(struct mmc_ioc_cmd *wdata)
 {
-	__u32 status = R1_READY_FOR_DATA;
+	__u32 status = 0;
 	unsigned int cur_block = wdata->arg / ONE_BLOCK_SIZE;
 
 	if (wdata->blocks <= 1) {
@@ -80,10 +80,10 @@ static void validate_multiple_operation(struct mmc_ioc_cmd *wdata)
 		pr_err("vmmc: mmc card memory overflow\n");
 		status |= R1_OUT_OF_RANGE;
 	}
-	wdata->response[0] = status;
+	wdata->response[0] |= status;
 }
 
-static int read_blocks(struct mmc_ioc_cmd *wdata, char *tmp, char *vmmc_buffer)
+static int read_blocks(struct mmc_ioc_cmd *wdata, char *vmmc_buffer)
 {
 	unsigned int cur_block = wdata->arg / ONE_BLOCK_SIZE;
 	char __user *user_ptr = u64_to_user_ptr(wdata->data_ptr);
@@ -92,9 +92,7 @@ static int read_blocks(struct mmc_ioc_cmd *wdata, char *tmp, char *vmmc_buffer)
 		char *start_copy =
 			vmmc_buffer + (cur_block + i) * ONE_BLOCK_SIZE;
 
-		memcpy(tmp, start_copy, ONE_BLOCK_SIZE);
-
-		if (copy_to_user(user_ptr + i * ONE_BLOCK_SIZE, tmp,
+		if (copy_to_user(user_ptr + i * ONE_BLOCK_SIZE, start_copy,
 				 ONE_BLOCK_SIZE)) {
 			pr_err("vmmc: error copy buffer to user\n");
 			return -EFAULT;
@@ -103,7 +101,7 @@ static int read_blocks(struct mmc_ioc_cmd *wdata, char *tmp, char *vmmc_buffer)
 	return 0;
 }
 
-static int write_blocks(struct mmc_ioc_cmd *wdata, char *tmp, char *vmmc_buffer)
+static int write_blocks(struct mmc_ioc_cmd *wdata, char *vmmc_buffer)
 {
 	unsigned int cur_block = wdata->arg / ONE_BLOCK_SIZE;
 	char __user *user_ptr = u64_to_user_ptr(wdata->data_ptr);
@@ -112,50 +110,44 @@ static int write_blocks(struct mmc_ioc_cmd *wdata, char *tmp, char *vmmc_buffer)
 		char *start_paste =
 			vmmc_buffer + (cur_block + i) * ONE_BLOCK_SIZE;
 
-		if (copy_from_user(tmp, user_ptr + i * ONE_BLOCK_SIZE,
+		if (copy_from_user(start_paste, user_ptr + i * ONE_BLOCK_SIZE,
 				   ONE_BLOCK_SIZE)) {
 			pr_err("vmmc: error copy buffer from user\n");
 			return -EFAULT;
 		}
-		memcpy(start_paste, tmp, ONE_BLOCK_SIZE);
 	}
 	return 0;
 }
 
 static long vmmc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
+	char *vmmc_buffer = filp->private_data;
+	struct mmc_ioc_cmd wdata;
+	int ret = 0;
+
 	if (cmd != MMC_IOC_CMD) {
 		pr_err("vmmc: unknown ioctl command number\n");
 		return -ENOTTY;
 	}
 
-	char *vmmc_buffer = filp->private_data;
-	struct mmc_ioc_cmd wdata;
-	char *tmp = NULL;
-	int ret = 0;
-
 	mutex_lock(&mutex);
-
-	tmp = kmalloc(ONE_BLOCK_SIZE, GFP_KERNEL);
-	if (!tmp) {
-		pr_err("vmmc: memory allocation failed\n");
-		ret = -ENOMEM;
-		goto unlock_out;
-	}
 
 	if (copy_from_user(&wdata, (struct mmc_ioc_cmd __user *)arg,
 			   sizeof(wdata))) {
 		pr_err("vmmc: error copy data from user\n");
 		ret = -EFAULT;
-		goto free_out;
+		goto unlock_out;
 	}
+
+	memset(wdata.response, 0, sizeof(wdata.response));
+	wdata.response[0] = R1_READY_FOR_DATA;
 
 	switch (wdata.opcode) {
 	case MMC_READ_SINGLE_BLOCK:
 		validate_single_operation(&wdata);
 
 		if (!R1_STATUS(wdata.response[0]))
-			ret = read_blocks(&wdata, tmp, vmmc_buffer);
+			ret = read_blocks(&wdata, vmmc_buffer);
 
 		break;
 
@@ -163,7 +155,7 @@ static long vmmc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		validate_multiple_operation(&wdata);
 
 		if (!R1_STATUS(wdata.response[0]))
-			ret = read_blocks(&wdata, tmp, vmmc_buffer);
+			ret = read_blocks(&wdata, vmmc_buffer);
 
 		break;
 
@@ -171,7 +163,7 @@ static long vmmc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		validate_single_operation(&wdata);
 
 		if (!R1_STATUS(wdata.response[0]))
-			ret = write_blocks(&wdata, tmp, vmmc_buffer);
+			ret = write_blocks(&wdata, vmmc_buffer);
 
 		break;
 
@@ -179,12 +171,12 @@ static long vmmc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		validate_multiple_operation(&wdata);
 
 		if (!R1_STATUS(wdata.response[0]))
-			ret = write_blocks(&wdata, tmp, vmmc_buffer);
+			ret = write_blocks(&wdata, vmmc_buffer);
 
 		break;
 
 	default:
-		pr_err("vmmc: unknown command");
+		pr_err("vmmc: unknown command\n");
 		wdata.response[0] |= R1_ILLEGAL_COMMAND;
 
 		break;
@@ -196,8 +188,6 @@ static long vmmc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		ret = -EFAULT;
 	}
 
-free_out:
-	kfree(tmp);
 unlock_out:
 	mutex_unlock(&mutex);
 	return ret;
@@ -216,7 +206,7 @@ static int vmmc_init(void)
 
 	ret = alloc_chrdev_region(&dev_num, 0, 1, DEVICE_NAME);
 	if (ret) {
-		pr_err("vmmc: alloc_chrdev_region failed witn code %d\n", ret);
+		pr_err("vmmc: alloc_chrdev_region failed with code %d\n", ret);
 		return ret;
 	}
 
@@ -227,14 +217,14 @@ static int vmmc_init(void)
 
 	ret = cdev_add(&vmmc_cdev, dev_num, 1);
 	if (ret) {
-		pr_err("vmmc: cdev_add failed witn code %d\n", ret);
+		pr_err("vmmc: cdev_add failed with code %d\n", ret);
 		goto unregister_region;
 	}
 
 	vmmc_class = class_create("vmmc");
 	if (IS_ERR(vmmc_class)) {
 		ret = PTR_ERR(vmmc_class);
-		pr_err("vmmc: class_create failed witn code %d\n", ret);
+		pr_err("vmmc: class_create failed with code %d\n", ret);
 		goto del_cdev;
 	}
 
@@ -243,7 +233,7 @@ static int vmmc_init(void)
 
 	if (IS_ERR(vmmc_device)) {
 		ret = PTR_ERR(vmmc_device);
-		pr_err("vmmc: device_create failed witn code %d\n", ret);
+		pr_err("vmmc: device_create failed with code %d\n", ret);
 		goto destroy_class;
 	}
 
