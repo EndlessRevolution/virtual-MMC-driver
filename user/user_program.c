@@ -50,6 +50,34 @@ int time_measure(struct timespec *start, struct timespec *end,
     return ret;
 }
 
+int write_full(int fd, char *data, size_t size) {
+    size_t  write_bytes = 0;
+    ssize_t ret;
+
+    while (write_bytes < size) {
+        ret = write(fd, data + write_bytes, size - write_bytes);
+        if (ret <= 0)
+            return 1;
+
+        write_bytes += (size_t)ret;
+    }
+    return 0;
+}
+
+int read_full(int fd, char *data, size_t size) {
+    size_t  read_bytes = 0;
+    ssize_t ret;
+
+    while (read_bytes < size) {
+        ret = read(fd, data + read_bytes, size - read_bytes);
+        if (ret <= 0)
+            return 1;
+
+        read_bytes += (size_t)ret;
+    }
+    return 0;
+}
+
 int parse_int(const char *str, unsigned long *out) {
     char *endptr;
     long  val;
@@ -66,10 +94,10 @@ int parse_int(const char *str, unsigned long *out) {
 }
 
 int main(int argc, char *argv[]) {
-    unsigned long long total_ns = 0;
     unsigned long long total_blocks = 0;
+    unsigned long long total_ns = 0;
     struct timespec    start, end;
-    int                fd, ret;
+    int                ret = 0;
     int                rc = 0;
 
     struct mmc_ioc_cmd wdata;
@@ -153,9 +181,9 @@ int main(int argc, char *argv[]) {
         wdata.write_flag = 0;
     }
 
-    fd = open(DEVICE_PATH, O_RDWR);
-    if (fd < 0) {
-        fprintf(stderr, "Failed to open device\n");
+    int dev_fd = open(DEVICE_PATH, O_RDWR);
+    if (dev_fd < 0) {
+        perror("open");
         return 1;
     }
 
@@ -171,9 +199,10 @@ int main(int argc, char *argv[]) {
             rc = 1;
             goto close_out;
         }
-        FILE *f = fopen(input_file, "rb");
-        if (!f) {
-            perror("fopen");
+
+        int input_fd = open(input_file, O_RDONLY);
+        if (input_fd < 0) {
+            perror("open");
             rc = 1;
             goto close_out;
         }
@@ -181,20 +210,19 @@ int main(int argc, char *argv[]) {
         data = malloc(count * ONE_BLOCK_SIZE);
         if (!data) {
             fprintf(stderr, "Memory allocation failed\n");
-            fclose(f);
+            close(input_fd);
             rc = 1;
             goto close_out;
         }
 
-        size_t r = fread(data, 1, count * ONE_BLOCK_SIZE, f);
-
-        fclose(f);
-
-        if (r != (size_t)count * ONE_BLOCK_SIZE) {
+        if (read_full(input_fd, data, (size_t)(count * ONE_BLOCK_SIZE))) {
             fprintf(stderr, "File is not full or read failed\n");
+            close(input_fd);
             rc = 1;
             goto free_out;
         }
+
+        close(input_fd);
     } else {
         if (input_file) {
             fprintf(stderr, "--input not allowed for read operations\n");
@@ -216,7 +244,7 @@ int main(int argc, char *argv[]) {
 
     mmc_ioc_cmd_set_data(wdata, data);
 
-    ret = time_measure(&start, &end, &wdata, fd);
+    ret = time_measure(&start, &end, &wdata, dev_fd);
 
     if (ret < 0 || R1_STATUS(wdata.response[0])) {
 
@@ -247,22 +275,21 @@ int main(int argc, char *argv[]) {
 
     if (!wdata.write_flag) {
 
-        FILE *f = fopen(output_file, "wb");
-        if (!f) {
-            perror("fopen");
+        int output_fd = open(output_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (output_fd < 0) {
+            perror("open");
             rc = 1;
             goto free_out;
         }
 
-        size_t written = fwrite(data, 1, count * ONE_BLOCK_SIZE, f);
-
-        if (written != (size_t)count * ONE_BLOCK_SIZE) {
+        if (write_full(output_fd, data, (size_t)(count * ONE_BLOCK_SIZE))) {
             fprintf(stderr, "Write to output file failed\n");
-            fclose(f);
+            close(output_fd);
             rc = 1;
             goto free_out;
         }
-        fclose(f);
+
+        close(output_fd);
     }
 
     printf("Average time: %.5Lf ns\n", (long double)total_ns / REPEATS);
@@ -272,6 +299,6 @@ int main(int argc, char *argv[]) {
 free_out:
     free(data);
 close_out:
-    close(fd);
+    close(dev_fd);
     return rc;
 }
