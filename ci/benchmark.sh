@@ -34,7 +34,7 @@ run_test() {
             --op "$op" \
             --offset "$offset" \
             --count "$count" \
-            --output out.bin)
+            --output output.bin)
     else
         output=$(./user_program \
             --op "$op" \
