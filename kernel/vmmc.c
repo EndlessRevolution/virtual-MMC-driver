@@ -44,7 +44,7 @@ static void validate_single_operation(struct mmc_ioc_cmd *wdata)
 	__u32 status = 0;
 	unsigned int cur_block = wdata->arg / ONE_BLOCK_SIZE;
 
-	if (wdata->blocks != 1) {
+	if (wdata->blocks != 1 || wdata->blksz != ONE_BLOCK_SIZE) {
 		pr_err("vmmc: wrong number of blocks\n");
 		status |= R1_BLOCK_LEN_ERROR;
 	}
@@ -66,7 +66,7 @@ static void validate_multiple_operation(struct mmc_ioc_cmd *wdata)
 	__u32 status = 0;
 	unsigned int cur_block = wdata->arg / ONE_BLOCK_SIZE;
 
-	if (wdata->blocks <= 1) {
+	if (wdata->blocks <= 1 || wdata->blksz != ONE_BLOCK_SIZE) {
 		pr_err("vmmc: wrong number of blocks\n");
 		status |= R1_BLOCK_LEN_ERROR;
 	}
@@ -76,7 +76,7 @@ static void validate_multiple_operation(struct mmc_ioc_cmd *wdata)
 		status |= R1_ADDRESS_ERROR;
 	}
 
-	if (wdata->blocks > MAX_BLOCKS - cur_block) {
+	if (cur_block >= MAX_BLOCKS || wdata->blocks > MAX_BLOCKS - cur_block) {
 		pr_err("vmmc: mmc card memory overflow\n");
 		status |= R1_OUT_OF_RANGE;
 	}
