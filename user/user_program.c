@@ -13,7 +13,7 @@
 
 #define SEC_TO_NS                1000000000LL
 #define REPEATS                  1000
-#define ONE_BLOCK_SIZE           512U
+#define ONE_BLOCK_SIZE           512
 #define DEVICE_PATH              "/dev/virtual_mmc_driver"
 
 #define MMC_RSP_SPI_R1           (1 << 0)
@@ -56,7 +56,14 @@ int write_full(int fd, char *data, size_t size) {
 
     while (write_bytes < size) {
         ret = write(fd, data + write_bytes, size - write_bytes);
-        if (ret <= 0)
+        if (ret < 0) {
+            if (errno == EINTR)
+                continue;
+
+            return 1;
+        }
+
+        if (ret == 0)
             return 1;
 
         write_bytes += (size_t)ret;
@@ -70,7 +77,14 @@ int read_full(int fd, char *data, size_t size) {
 
     while (read_bytes < size) {
         ret = read(fd, data + read_bytes, size - read_bytes);
-        if (ret <= 0)
+        if (ret < 0) {
+            if (errno == EINTR)
+                continue;
+
+            return 1;
+        }
+
+        if (ret == 0)
             return 1;
 
         read_bytes += (size_t)ret;
@@ -153,9 +167,9 @@ int main(int argc, char *argv[]) {
 
     if (!operation || !offset_str || !count_str) {
         fprintf(stderr, "Usage:\n"
-                        "--op <operation code>\n"
-                        "--offset <byte num>\n"
-                        "--count <block num>\n"
+                        "--op <operation_code>\n"
+                        "--offset <offset_bytes>\n"
+                        "--count <block_count>\n"
                         "[--input file]  (for write only)\n"
                         "[--output file] (for read only)\n");
         return 1;
@@ -293,7 +307,7 @@ int main(int argc, char *argv[]) {
     }
 
     printf("Average time: %.5Lf ns\n", (long double)total_ns / REPEATS);
-    printf("Average blocks per ns: %.5Lf ns\n",
+    printf("Average blocks per ns: %.5Lf\n",
            (long double)total_blocks / total_ns);
 
 free_out:
