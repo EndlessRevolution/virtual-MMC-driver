@@ -9,31 +9,44 @@ make >/dev/null
 
 printf "\n"
 
-printf "%-30s   %-30s\n" \
-    "Test name" "Result"
-
-printf "%-33s%-30s\n" \
-    "---------------------------------"\
-    "------------------------------"
+passed=0
+failed=0
+failures=""
 
 print_result() {
     local name=$1
     local message=$2
-    local reason=$3
+    local expected=$3
+    local actual=$4
+    local i=${#name}
 
-    printf "%-30s   %-30s\n" \
-    "$name" "$message"
+    printf "TEST: %s " "$name"
 
-    if [ "$reason" != "" ]; then
-        printf "\n"
-        printf "%s\n" "$reason"
-        printf "\n"
+    while [ "$i" -lt 25 ]; do
+        printf "."
+        i=$((i + 1))
+    done
+
+    printf " %s\n" "$message"
+
+    if [ "$message" = "OK" ]; then
+        passed=$((passed + 1))
+    else
+        failed=$((failed + 1))
+
+        if [ "$expected" != "" ]; then
+            failures="$failures
+FAILED: $name
+  expected \"$expected\"
+  actual   \"$actual\"
+"
+        else
+            failures="$failures
+FAILED: $name
+  error    \"$actual\"
+"
+        fi
     fi
-
-    printf "%-33s%-30s\n" \
-        "---------------------------------"\
-        "------------------------------"
-    printf "\n"
 }
 
 test_persistent() {
@@ -54,7 +67,7 @@ test_persistent() {
     code=$?
 
     if [ $code -ne 0 ]; then
-        print_result "$name" "FAILED" "$output"
+        print_result "$name" "FAILED" "" "$output"
         return
     fi
 
@@ -67,14 +80,15 @@ test_persistent() {
     code=$?
 
     if [ $code -ne 0 ]; then
-        print_result "$name" "FAILED" "$output"
+        print_result "$name" "FAILED" "" "$output"
         return
     fi
 
     if cmp -s input.bin output.bin; then
-        print_result "$name" "PASSED"
+        print_result "$name" "OK"
     else
-        print_result "$name" "MISMATCH"  \
+        print_result "$name" "FAILED" \
+        "data read is equal to data written" \
         "data read is different from data written"
     fi
 }
@@ -103,9 +117,11 @@ test_card_error() {
     fi
 
     if [ "$output" == "vmmc: $name" ]; then
-        print_result "$name" "PASSED"
-    else print_result "$name" "MISMATCH" \
-        "\"$output\" instead of \"vmmc: $name\""
+        print_result "$name" "OK"
+    elif [ "$output" == "open: Permission denied" ]; then
+        print_result "$name" "FAILED" "" "$output"
+    else print_result "$name" "FAILED" \
+        "vmmc: $name" "$output"
     fi
 }
 
@@ -118,3 +134,10 @@ test_card_error "Address error"         24 2047 1       write
 test_card_error "Illegal command"       30 512  10      read
 test_card_error "Block length error"    24 0    3       write
 test_card_error "Out of range"          18 1024 2047    read
+
+if [ "$failed" -ne 0 ]; then
+    printf "\n"
+    printf "%s\n" "$failures"
+fi
+
+printf "summary: %s OK, %s FAILED\n" "$passed" "$failed"
