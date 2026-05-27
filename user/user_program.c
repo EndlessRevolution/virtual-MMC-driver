@@ -12,7 +12,7 @@
 #include <unistd.h>
 
 #define SEC_TO_NS                1000000000LL
-#define REPEATS                  1000
+#define REPEATS                  1000000
 #define ONE_BLOCK_SIZE           512
 #define DEVICE_PATH              "/dev/virtual_mmc_driver"
 
